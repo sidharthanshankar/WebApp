@@ -1,0 +1,4 @@
+class config:
+    INSERT_KEY = "#DEEPDIVETECHNOLOGIES123"
+    SQLALCHEMY_DATABASE_URI = "sqlite:///./quiz.sqlite3"
+    SQLALCHEMY_TRACK_MODIFICATIONS = False
