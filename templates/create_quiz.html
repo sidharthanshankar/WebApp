@@ -1,0 +1,20 @@
+<div class="container mt-5">
+    <div class="card shadow p-4">
+        <h3><i class="fas fa-robot text-primary"></i> AI Quiz Generator</h3>
+        <p class="text-muted">Enter a topic and let Gemini create the questions for you.</p>
+        <form action="{{ url_for('generate_quiz') }}" method="POST">
+            <div class="mb-3">
+                <label>Quiz Topic</label>
+                <input type="text" name="topic" class="form-control" placeholder="e.g. Python Programming, Space Exploration" required>
+            </div>
+            <div class="mb-3">
+                <label>Number of Questions</label>
+                <select name="num_questions" class="form-select">
+                    <option value="5">5 Questions</option>
+                    <option value="10">10 Questions</option>
+                </select>
+            </div>
+            <button type="submit" class="btn btn-primary w-100">Generate Quiz with AI</button>
+        </form>
+    </div>
+</div>

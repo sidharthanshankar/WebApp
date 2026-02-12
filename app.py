@@ -3,10 +3,16 @@ from controller.config import config
 from controller.database import db
 from flask import session
 from controller.models import *
+import google.generativeai as genai
+import json
 
 app = Flask(__name__)
 
 app.config.from_object(config)
+
+# GEMINI AI SETUP
+genai.configure(api_key= 'AlzaSyAd_R9Aoe16XDPVZzuK2WGLiO0CEFUx28YY')
+model = genai.GenerativeModel('gemini-1.5-flash')
 
 db.init_app(app)
 
@@ -35,82 +41,190 @@ with app.app_context():
         db.session.add(admin_role)
         db.session.commit()
 
+# --- HELPER FUNCTION ---
+def get_gemini_fact():
+    try:
+        # We use the 'model' instance you configured with your Gemini API key
+        prompt = "Provide a one-sentence interesting educational fact about science or history. Keep it concise."
+        response = model.generate_content(prompt)
+        return response.text.strip()
+    except Exception as e:
+        print(f"Gemini Fact Error: {e}") # Helpful for debugging
+        return "Learning is the only thing the mind never exhausts, never fears, and never regrets."
+#-----------------------routes-----------------------
 @app.route("/")
 def home():
     return render_template("index.html")
 
 @app.route("/register", methods=["GET", "POST"])
 def register():
-    # Filter out Admin (ID 1) so only Student and Teacher show up
-    available_roles = Role.query.filter(Role.id != 1).all()
-    
+    roles = Role.query.filter(Role.id != 1).all()
     if request.method == "POST":
-        username = request.form.get("username")
         email = request.form.get("email")
-        password = request.form.get("password")
-        role_id = request.form.get("role_id")
+        
+        # CHECK IF EMAIL EXISTS BEFORE SAVING
+        existing_user = User.query.filter_by(email=email).first()
+        if existing_user:
+            flash("This email is already registered. Please login.")
+            return redirect(url_for('login'))
 
-        new_user = User(username=username, email=email, password=password)
+        # If it doesn't exist, proceed with saving
+        new_user = User(
+            username=request.form.get("username"), 
+            email=email, 
+            password=request.form.get("password")
+        )
         db.session.add(new_user)
         db.session.commit()
-
-        # Assign the selected role
-        user_role = UserRole(user_id=new_user.id, role_id=role_id)
-        db.session.add(user_role)
+        
+        db.session.add(UserRole(user_id=new_user.id, role_id=request.form.get("role_id")))
         db.session.commit()
         
+        flash("Registration successful!")
         return redirect(url_for('login'))
-
-    return render_template("register.html", roles=available_roles)
+    return render_template("register.html", roles=roles)
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
-        email = request.form.get("email")
-        password = request.form.get("password")
-
-        # 1. Find user by email
-        user = User.query.filter_by(email=email).first()
-
-        # 2. Check if user exists and password matches
-        if user and user.password == password: # In production, use hashed passwords!
+        user = User.query.filter_by(email=request.form.get("email")).first()
+        if user and user.password == request.form.get("password"):
+            session['user_id'] = user.id
+            session['username'] = user.username
+            role_entry = UserRole.query.filter_by(user_id=user.id).first()
+            session['role_id'] = role_entry.role_id
             
-            # 3. Get the user's role ID from the UserRole table
-            user_role_entry = UserRole.query.filter_by(user_id=user.id).first()
-            role_id = user_role_entry.role_id
-
-            # 4. Redirect based on your database IDs (2=Staff, 3=Student)
-            if role_id == 2:
-                return redirect(url_for('staff_dashboard'))
-            elif role_id == 3:
-                return redirect(url_for('student_dashboard'))
-        else:
-            return "Invalid credentials, please try again."
-
+            if role_entry.role_id == 1: return redirect(url_for('admin_dashboard'))
+            if role_entry.role_id == 2: return redirect(url_for('staff_dashboard'))
+            return redirect(url_for('student_dashboard'))
+        flash("Invalid Credentials")
     return render_template("login.html")
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for('login'))
+
+# --- 6. ADMIN DASHBOARD ---
+
+@app.route("/admin/dashboard")
+def admin_dashboard():
+    # Security check: Ensure user is logged in and is Admin
+    if 'user_id' not in session or session.get('role_id') != 1:
+        return redirect(url_for('login'))
+
+    # 1. Fetch Stats
+    total_students = UserRole.query.filter_by(role_id=3).count()
+    total_teachers = UserRole.query.filter_by(role_id=2).count()
+    total_quizzes = Quiz.query.count()
+
+    # 2. Fetch All Users with their Roles (Explicit Join)
+    # This solves the InvalidRequestError by defining the exact path
+    all_users = db.session.query(User, Role.name).\
+        select_from(User).\
+        join(UserRole, User.id == UserRole.user_id).\
+        join(Role, UserRole.role_id == Role.id).\
+        all()
+
+    return render_template("admin_dashboard.html", 
+                           username=session.get('username'),
+                           total_students=total_students,
+                           total_teachers=total_teachers,
+                           total_quizzes=total_quizzes,
+                           all_users=all_users)
+
+# --- 7. STAFF ROUTES (CREATION & PERFORMANCE) ---
 
 @app.route("/staff/dashboard")
 def staff_dashboard():
-    # For your demo, we'll fetch the 'admin' or first 'Teacher' user
-    # In a full app, you'd use session['user_id']
-    user = User.query.filter_by(username="admin").first() 
-    
-    # Fetch all users who have the 'Student' role (Role ID 3)
-    students = User.query.join(UserRole).filter(UserRole.role_id == 3).all()
-    
-    # Example stats for the dashboard cards
-    stats = {
-        'total_students': len(students),
-        'active_quizzes': 5,  # Static for now
-        'avg_score': "82%"    # Static for now
-    }
-    
-    return render_template("staff_dashboard.html", user=user, students=students, stats=stats)
+    if session.get('role_id') != 2: return redirect(url_for('login'))
+    user = User.query.get(session['user_id'])
+    quizzes = Quiz.query.filter_by(creator_id=user.id).all()
+    return render_template("staff_dashboard.html", user=user, quizzes=quizzes)
+
+@app.route("/staff/profile_update", methods=["POST"])
+def staff_profile_update():
+    user = User.query.get(session['user_id'])
+    user.username = request.form.get("username")
+    user.email = request.form.get("email")
+    if request.form.get("password"): user.password = request.form.get("password")
+    db.session.commit()
+    flash("Profile Updated!")
+    return redirect(url_for('staff_dashboard'))
+
+@app.route("/staff/generate_quiz", methods=["POST"])
+def generate_quiz():
+    topic = request.form.get("topic")
+    num = request.form.get("num_questions", 5)
+    prompt = f"Create a {num}-question multiple choice quiz about {topic}. Return JSON: {{'title': '...', 'questions': [{{'text': '...', 'options': ['A', 'B', 'C', 'D'], 'correct_answer': 'Option Text'}}]}}"
+    try:
+        response = model.generate_content(prompt)
+        clean_json = response.text.strip().replace('```json', '').replace('```', '')
+        data = json.loads(clean_json)
+        quiz = Quiz(title=data['title'], creator_id=session['user_id'])
+        db.session.add(quiz)
+        db.session.commit()
+        for q in data['questions']:
+            db.session.add(Question(quiz_id=quiz.id, text=q['text'], options=q['options'], correct_answer=q['correct_answer']))
+        db.session.commit()
+        flash("AI Quiz Generated!")
+    except Exception as e: flash(f"Generation Error: {e}")
+    return redirect(url_for('staff_dashboard'))
+
+@app.route("/staff/create_quiz")
+def create_quiz_page():
+    if session.get('role_id') != 2: 
+        return redirect(url_for('login'))
+    return render_template("create_quiz.html")
+
+@app.route("/staff/quiz_results/<int:quiz_id>")
+def quiz_results(quiz_id):
+    quiz = Quiz.query.get_or_404(quiz_id)
+    results = StudentResult.query.filter_by(quiz_id=quiz_id).all()
+    return render_template("quiz_results.html", quiz=quiz, results=results)
+
+# --- 8. STUDENT ROUTES (TAKING & HISTORY) ---
 
 @app.route("/student/dashboard")
 def student_dashboard():
-    # In a real app, pass the logged-in student's data here
-    return render_template("student_dashboard.html")
+    if session.get('role_id') != 3: return redirect(url_for('login'))
+    user = User.query.get(session['user_id'])
+    history = StudentResult.query.filter_by(user_id=user.id).all()
+    available = Quiz.query.all()
+    return render_template("student_dashboard.html", user=user, daily_fact=get_gemini_fact(), history=history, available_quizzes=available)
 
+@app.route("/student/profile_update", methods=["POST"])
+def student_profile_update():
+    user = User.query.get(session['user_id'])
+    user.username = request.form.get("username")
+    user.email = request.form.get("email")
+    if request.form.get("password"): user.password = request.form.get("password")
+    db.session.commit()
+    flash("Profile Updated!")
+    return redirect(url_for('student_dashboard'))
+
+@app.route("/student/take_quiz/<int:quiz_id>")
+def take_quiz(quiz_id):
+    quiz = Quiz.query.get_or_404(quiz_id)
+    questions = Question.query.filter_by(quiz_id=quiz_id).all()
+    return render_template("take_quiz.html", quiz=quiz, questions=questions)
+
+@app.route("/student/submit_quiz/<int:quiz_id>", methods=["POST"])
+def submit_quiz(quiz_id):
+    questions = Question.query.filter_by(quiz_id=quiz_id).all()
+    score = 0
+    for q in questions:
+        ans = request.form.get(f"question_{q.id}")
+        is_correct = (ans == q.correct_answer)
+        if is_correct: score += 1
+        db.session.add(StudentAnswer(user_id=session['user_id'], quiz_id=quiz_id, question_id=q.id, selected_option=ans, is_correct=is_correct))
+    
+    percent = int((score / len(questions)) * 100) if questions else 0
+    db.session.add(StudentResult(user_id=session['user_id'], quiz_id=quiz_id, score=percent, total_questions=len(questions)))
+    db.session.commit()
+    flash(f"Quiz Complete! You scored {percent}%")
+    return redirect(url_for('student_dashboard'))
+
+# --- 9. RUN APP ---
 if __name__ == "__main__":
     app.run(debug=True)
