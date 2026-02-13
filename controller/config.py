@@ -14,4 +14,4 @@ class config:
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 
     # 3. Add your Gemini Key here so app.py can find it
-    GEMINI_API_KEY = "AlzaSyAd_R9Aoe16XDPVZzuK2WGLiO0CEFUx28YY"
+    GEMINI_API_KEY = "AIzaSyAd_R9Aoe16XDPVZzuK2WGLiO0CEFUx28YY"

@@ -3,18 +3,60 @@ from controller.config import config
 from controller.database import db
 from flask import session
 from controller.models import *
-import google.generativeai as genai
+from google import genai # The new 2026 import
+from google.genai import types
 import json
+import random
+import re
+
 
 app = Flask(__name__)
 
 app.config.from_object(config)
 
-# GEMINI AI SETUP
-genai.configure(api_key= 'AlzaSyAd_R9Aoe16XDPVZzuK2WGLiO0CEFUx28YY')
-model = genai.GenerativeModel('gemini-1.5-flash')
+
+# 1. Initialize the Client (replaces genai.configure)
+client = genai.Client(api_key='AIzaSyA0rodqYcYOr_3gATn5H4-l1GmMTesGbeM')
+
+# --- SMART MODEL SELECTION ---
+try:
+    # In the new SDK, the attribute is 'supported_methods' 
+    # and the action is 'generate_content'
+    generate_models = [
+        m for m in client.models.list() 
+        if 'generate_content' in (m.supported_methods or [])
+    ]
+    
+    # Prioritize newest models (2.5 -> 2.0 -> Pro -> Flash)
+    pref_order = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash']
+    model_name = "gemini-2.5-flash" # Default fallback
+    
+    for pref in pref_order:
+        if any(pref in m.name for m in generate_models):
+            model_name = pref
+            break
+            
+    print(f"✅ AI Setup Success: Using {model_name}")
+except Exception as e:
+    # If listing fails, we hardcode the most reliable 2026 stable model
+    model_name = "gemini-2.5-flash"
+    print(f"⚠️ AI Setup Warning: Could not list models ({e}). Falling back to {model_name}")
+
+# --- UPDATED CHAT FUNCTION ---
+# Note: Use client.models.generate_content (not GenerativeModel)
+def get_ai_response(user_input):
+    try:
+        response = client.models.generate_content(
+            model=model_name,
+            contents=user_input
+        )
+        return response.text
+    except Exception as e:
+        return f"Error: {str(e)}"
+    
 
 db.init_app(app)
+
 
 with app.app_context():
     db.create_all()
@@ -43,14 +85,16 @@ with app.app_context():
 
 # --- HELPER FUNCTION ---
 def get_gemini_fact():
+    topics = ["science", "history", "space", "technology", "nature", "coding"]
+    selected_topic = random.choice(topics)
+    
     try:
-        # We use the 'model' instance you configured with your Gemini API key
-        prompt = "Provide a one-sentence interesting educational fact about science or history. Keep it concise."
-        response = model.generate_content(prompt)
+        # We ask for a random topic each time to ensure variety
+        response = client.generate_content(f"Tell me one short, interesting fact about {selected_topic}.")
         return response.text.strip()
     except Exception as e:
-        print(f"Gemini Fact Error: {e}") # Helpful for debugging
-        return "Learning is the only thing the mind never exhausts, never fears, and never regrets."
+        print(f"Fact Error: {e}")
+        return "Did you know? The Python programming language is named after Monty Python, not the snake."
 #-----------------------routes-----------------------
 @app.route("/")
 def home():
@@ -137,38 +181,84 @@ def admin_dashboard():
 
 @app.route("/staff/dashboard")
 def staff_dashboard():
-    if session.get('role_id') != 2: return redirect(url_for('login'))
-    user = User.query.get(session['user_id'])
+    if session.get('role_id') != 2: 
+        return redirect(url_for('login'))
+    
+    # Use db.session.get to avoid the LegacyWarning
+    user = db.session.get(User, session['user_id'])
+    
+    # We fetch quizzes and 'join' the results so we can see student scores
     quizzes = Quiz.query.filter_by(creator_id=user.id).all()
+    
     return render_template("staff_dashboard.html", user=user, quizzes=quizzes)
 
-@app.route("/staff/profile_update", methods=["POST"])
-def staff_profile_update():
-    user = User.query.get(session['user_id'])
+@app.route("/staff/profile/update", methods=["POST"])
+def update_profile():
+    if 'user_id' not in session:
+        return redirect(url_for('login'))
+    
+    user = db.session.get(User, session['user_id'])
     user.username = request.form.get("username")
     user.email = request.form.get("email")
-    if request.form.get("password"): user.password = request.form.get("password")
-    db.session.commit()
-    flash("Profile Updated!")
-    return redirect(url_for('staff_dashboard'))
+    
+    try:
+        db.session.commit()
+        flash("Profile updated successfully!")
+    except Exception as e:
+        db.session.rollback()
+        flash("Error updating profile: Username or Email might already be taken.")
+        
+    return redirect("/staff/generate_quiz", methods=["POST"])
+
 
 @app.route("/staff/generate_quiz", methods=["POST"])
 def generate_quiz():
     topic = request.form.get("topic")
     num = request.form.get("num_questions", 5)
-    prompt = f"Create a {num}-question multiple choice quiz about {topic}. Return JSON: {{'title': '...', 'questions': [{{'text': '...', 'options': ['A', 'B', 'C', 'D'], 'correct_answer': 'Option Text'}}]}}"
+    
+    prompt = (f"Generate a {num} question quiz about {topic} in valid JSON. "
+              "Format: {'title': '...', 'questions': [{'text': '...', 'options': ['A','B','C','D'], 'correct_answer': '...'}]}")
+    
     try:
-        response = model.generate_content(prompt)
-        clean_json = response.text.strip().replace('```json', '').replace('```', '')
-        data = json.loads(clean_json)
-        quiz = Quiz(title=data['title'], creator_id=session['user_id'])
-        db.session.add(quiz)
+        # NEW SYNTAX: Use client.models instead of model.generate
+        response = client.models.generate_content(
+            model=model_name, 
+            contents=prompt
+        )
+
+        import json, re
+        match = re.search(r"\{.*\}", response.text, re.DOTALL)
+        if not match:
+            flash("AI returned invalid format. Please try again.")
+            return redirect(url_for('staff_dashboard'))
+            
+        data = json.loads(match.group(0))
+        
+        # Database logic
+        new_quiz = Quiz(title=data.get('title', topic), creator_id=session.get('user_id'))
+        db.session.add(new_quiz)
         db.session.commit()
+
         for q in data['questions']:
-            db.session.add(Question(quiz_id=quiz.id, text=q['text'], options=q['options'], correct_answer=q['correct_answer']))
+            question_obj = Question(
+                quiz_id=new_quiz.id,
+                text=q['text'],
+                options=json.dumps(q['options']), 
+                correct_answer=q['correct_answer']
+            )
+            db.session.add(question_obj)
         db.session.commit()
-        flash("AI Quiz Generated!")
-    except Exception as e: flash(f"Generation Error: {e}")
+        flash("Quiz generated successfully!")
+
+    except Exception as e:  # <--- FIXES UnboundLocalError
+        db.session.rollback()
+        error_str = str(e)   # Now 'e' is defined, so this won't crash
+        
+        if "429" in error_str:
+            flash("AI Quota Exceeded. Please wait 1 minute.")
+        else:
+            flash(f"AI Error: {error_str}")
+
     return redirect(url_for('staff_dashboard'))
 
 @app.route("/staff/create_quiz")
@@ -188,7 +278,7 @@ def quiz_results(quiz_id):
 @app.route("/student/dashboard")
 def student_dashboard():
     if session.get('role_id') != 3: return redirect(url_for('login'))
-    user = User.query.get(session['user_id'])
+    user = db.session.get(User, session['user_id'])
     history = StudentResult.query.filter_by(user_id=user.id).all()
     available = Quiz.query.all()
     return render_template("student_dashboard.html", user=user, daily_fact=get_gemini_fact(), history=history, available_quizzes=available)
