@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Quiz Results | Staff Portal</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+</head>
+<body class="bg-light">
+
+<div class="container mt-5">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <div>
+            <h2>Results for: <span class="text-primary">{{ quiz.title }}</span></h2>
+            <p class="text-muted">Total Submissions: {{ results|length }}</p>
+        </div>
+        <a href="{{ url_for('staff_dashboard') }}" class="btn btn-secondary">
+            <i class="fas fa-arrow-left"></i> Back to Dashboard
+        </a>
+    </div>
+
+    <div class="card shadow border-0">
+        <div class="card-body">
+            <div class="table-responsive">
+                <table class="table table-hover align-middle">
+                    <thead class="table-dark">
+                        <tr>
+                            <th>Student Name</th>
+                            <th>Email</th>
+                            <th>Score (%)</th>
+                            <th>Questions Correct</th>
+                            <th>Date Attempted</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% if results %}
+                            {% for res in results %}
+                            <tr>
+                                <td><strong>{{ res.user_rel.username }}</strong></td>
+                                <td>{{ res.user_rel.email }}</td>
+                                <td>
+                                    <span class="badge {{ 'bg-success' if res.score >= 50 else 'bg-danger' }} fs-6">
+                                        {{ res.score }}%
+                                    </span>
+                                </td>
+                                <td>{{ (res.score * res.total_questions / 100)|int }} / {{ res.total_questions }}</td>
+                                <td>{{ res.date_taken.strftime('%Y-%m-%d %H:%M') }}</td>
+                            </tr>
+                            {% endfor %}
+                        {% else %}
+                            <tr>
+                                <td colspan="5" class="text-center py-4 text-muted">
+                                    No students have taken this quiz yet.
+                                </td>
+                            </tr>
+                        {% endif %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
